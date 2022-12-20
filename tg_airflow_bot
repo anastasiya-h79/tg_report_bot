@@ -1,0 +1,156 @@
+# Скрипт для сборки отчета. Отчет должен состоять из двух частей:
+# 1. Текст с информацией о значениях ключевых метрик за предыдущий день
+# 2. График с значениями метрик за предыдущие 7 дней
+# Ключевые метрики: 
+# - DAU 
+# - Просмотры
+# - Лайки
+# - CTR
+
+from datetime import timedelta, datetime
+import telegram
+import io
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import pandahouse as ph
+
+from airflow.decorators import dag, task
+from airflow.operators.python import get_current_context
+
+
+# Дефолтные параметры, прокидываются в таски
+default_args = {
+    'owner': 'amakarova',
+    'depends_on_past': False,
+    'retries': 2,
+    'retry_delay': timedelta(minutes=5),
+    'start_date': datetime(2022, 12, 15)}
+
+
+#my_token = ' '
+bot = telegram.Bot(token=my_token)
+#chat_id =   
+
+
+# Для подключения к бд
+connection = {'host': ' ',
+              'password': ' ',
+              'user': ' ',
+              'database': ' '}
+
+# Интервал запуска DAG
+schedule_interval = '0 11 * * *'
+
+@dag(default_args=default_args, schedule_interval=schedule_interval, catchup=False, tags = ['an-makarova'])
+def amakarova_report_tg():
+
+    
+    @task
+    # Загружаем данные за прошлый день
+    def extract_yesterday():
+        query_1 = """SELECT max(toDate(time)) as day, 
+        count(DISTINCT user_id) as DAU, 
+        sum(action = 'like') as likes,
+        sum(action = 'view') as views, 
+        likes/views as CTR
+        FROM feed_actions 
+        WHERE toDate(time) = yesterday()"""
+
+        report_yesterday = ph.read_clickhouse(query_1, connection=connection)
+        return report_yesterday
+
+    @task
+    # Загружаем данные за прошлую неделею
+    def extract_last_7_days():
+        
+        query_2 = """SELECT toDate(time) as day, 
+        count(DISTINCT user_id) as DAU, 
+        sum(action = 'like') as likes,
+        sum(action = 'view') as views, 
+        likes/views as CTR
+        FROM feed_actions
+        WHERE toDate(time) > today()-8 AND toDate(time) < today()
+        GROUP BY day"""
+
+        report_7_days = ph.read_clickhouse(query_2, connection=connection)
+        return report_7_days
+
+    @task
+    # Отправляем данные в ТГ
+    def send_report(report_yesterday, report_7_days):
+        message = f'''
+            Ключевые метрики за {str(report_yesterday.iat[0, 0])[:-9]}
+            DAU: {str(report_yesterday.iat[0, 1])}
+            likes: {str(report_yesterday.iat[0, 2])}
+            views: {str(report_yesterday.iat[0, 3])}
+            CTR: {str(report_yesterday.iat[0, 4])}'''
+        
+
+        bot.sendMessage(chat_id=chat_id, text=message)
+    
+        #DAU
+        plt.figure()
+        sns.set(rc={'figure.figsize':(17,10)})
+        sns.lineplot(data=report_7_days, x=report_7_days['day'], y=report_7_days['DAU'], marker='o', markersize=10, linewidth=3)
+        plt.title('DAU')
+        plt.xlabel(None)
+        plt.ylabel(None)
+        plot_object = io.BytesIO()
+        plt.savefig(plot_object)
+        plot_object.seek(0)
+        plot_object.name = 'dau.png'
+        plt.close()
+        bot.sendPhoto(chat_id=chat_id, photo=plot_object)
+        
+        #likes
+        plt.figure()
+        sns.set(rc={'figure.figsize':(17,10)})
+        sns.lineplot(data=report_7_days, x=report_7_days['day'], y=report_7_days['likes'], marker='o', markersize=10, linewidth=3)
+        plt.title('likes')
+        plt.xlabel(None)
+        plt.ylabel(None)
+        plot_object_2 = io.BytesIO()
+        plt.savefig(plot_object_2)
+        plot_object_2.seek(0)
+        plot_object_2.name = 'likes.png'
+        plt.close()
+        bot.sendPhoto(chat_id=chat_id, photo=plot_object_2)
+        
+        #views
+        plt.figure()
+        sns.set(rc={'figure.figsize':(17,10)})
+        sns.lineplot(data=report_7_days, x=report_7_days['day'], y=report_7_days['views'], marker='o', markersize=10, linewidth=3)
+        plt.title('views')
+        plt.xlabel(None)
+        plt.ylabel(None)
+        plot_object_3 = io.BytesIO()
+        plt.savefig(plot_object_3)
+        plot_object_3.seek(0)
+        plot_object_3.name = 'views.png'
+        plt.close()
+        bot.sendPhoto(chat_id=chat_id, photo=plot_object_3)
+
+        #CTR
+        plt.figure()
+        sns.set(rc={'figure.figsize':(17,10)})
+        sns.lineplot(data=report_7_days, x=report_7_days['day'], y=report_7_days['CTR'], marker='o', markersize=10, linewidth=3)
+        plt.title('CTR')
+        plt.xlabel(None)
+        plt.ylabel(None)
+        plot_object_4 = io.BytesIO()
+        plt.savefig(plot_object_4)
+        plot_object_4.seek(0)
+        plot_object_4.name = 'CTR.png'
+        plt.close()
+        bot.sendPhoto(chat_id=chat_id, photo=plot_object_4)
+        
+   
+
+    report_yesterday = extract_yesterday()
+    report_7_days = extract_last_7_days()
+    send_report(report_yesterday, report_7_days)
+        
+amakarova_report_tg = amakarova_report_tg()
+
